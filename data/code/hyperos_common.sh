@@ -77,10 +77,27 @@ read_choice() {
     done
 }
 
+report_error() {
+    printf '%s[!] %s%s\n' "$TXT_RED" "$1" "$RESET" >&2
+    if [ -n "${LOGFILE:-}" ] && [ "$LOGFILE" != "/dev/null" ]; then
+        printf '%s | ERROR | %s\n' "$(date '+%H:%M:%S')" "$1" >> "$LOGFILE"
+    fi
+}
+
 ensure_config() {
     if [ ! -f "$CONFIG_PATH" ]; then
-        mkdir -p "$CONFIG_DIR"
-        cp "$CONFIG_DEFAULT_PATH" "$CONFIG_PATH"
+        if [ ! -r "$CONFIG_DEFAULT_PATH" ]; then
+            report_error "Default config is missing or unreadable: CONFIG_DEFAULT_PATH=$CONFIG_DEFAULT_PATH"
+            exit 1
+        fi
+        if ! mkdir -p "$CONFIG_DIR"; then
+            report_error "Unable to create config directory: CONFIG_DIR=$CONFIG_DIR"
+            exit 1
+        fi
+        if ! cp "$CONFIG_DEFAULT_PATH" "$CONFIG_PATH"; then
+            report_error "Unable to copy CONFIG_DEFAULT_PATH=$CONFIG_DEFAULT_PATH to CONFIG_PATH=$CONFIG_PATH"
+            exit 1
+        fi
     fi
 }
 
@@ -200,12 +217,34 @@ prepare_runtime() {
     RUNTIME_DIR=$(mktemp -d "${TMPDIR:-/tmp}/hyperos_debloater.XXXXXX") || exit 1
     trap 'rm -rf "$RUNTIME_DIR"' EXIT HUP INT TERM
 
-    phase_packages "phase1_safe" > "$RUNTIME_DIR/phase1_safe"
-    phase_packages "phase2_advanced" > "$RUNTIME_DIR/phase2_advanced"
-    phase_packages "phase3_risky" > "$RUNTIME_DIR/phase3_risky"
-    phase_packages "phase4_hidden" > "$RUNTIME_DIR/phase4_hidden"
-    phase_packages "restore_only" > "$RUNTIME_DIR/restore_only"
-    description_map > "$RUNTIME_DIR/descriptions.tsv"
+    prepare_phase_file "phase1_safe" "$RUNTIME_DIR/phase1_safe" || return 1
+    prepare_phase_file "phase2_advanced" "$RUNTIME_DIR/phase2_advanced" || return 1
+    prepare_phase_file "phase3_risky" "$RUNTIME_DIR/phase3_risky" || return 1
+    prepare_phase_file "phase4_hidden" "$RUNTIME_DIR/phase4_hidden" || return 1
+    prepare_phase_file "restore_only" "$RUNTIME_DIR/restore_only" || return 1
+
+    if ! description_map > "$RUNTIME_DIR/descriptions.tsv"; then
+        report_error "prepare_runtime failed: description_map could not write $RUNTIME_DIR/descriptions.tsv"
+        return 1
+    fi
+    if [ ! -s "$RUNTIME_DIR/descriptions.tsv" ]; then
+        report_error "prepare_runtime failed: description_map produced an empty $RUNTIME_DIR/descriptions.tsv"
+        return 1
+    fi
+}
+
+prepare_phase_file() {
+    ppf_phase=$1
+    ppf_output=$2
+
+    if ! phase_packages "$ppf_phase" > "$ppf_output"; then
+        report_error "prepare_runtime failed: phase_packages $ppf_phase could not write $ppf_output in RUNTIME_DIR=$RUNTIME_DIR"
+        return 1
+    fi
+    if [ ! -s "$ppf_output" ]; then
+        report_error "prepare_runtime failed: phase_packages $ppf_phase produced an empty $ppf_output in RUNTIME_DIR=$RUNTIME_DIR"
+        return 1
+    fi
 }
 
 app_label() {

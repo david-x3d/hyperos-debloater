@@ -7,7 +7,7 @@ ROOT_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)
 
 ensure_config
 load_runtime_settings
-prepare_runtime
+prepare_runtime || exit 1
 require_adb
 start_log
 
@@ -29,12 +29,56 @@ cache_device_state() {
         awk '{ print "package:" $0 }' "$RUNTIME_DIR/all_packages" > "$RUNTIME_DIR/adb_all.txt"
         awk '{ print "package:" $0 }' "$RUNTIME_DIR/all_packages" > "$RUNTIME_DIR/adb_active.txt"
         : > "$RUNTIME_DIR/adb_disabled.txt"
+        CACHE_READY=1
         return
     fi
 
-    adb_run -s "$TARGET_ID" shell pm list packages -u 2>/dev/null | sed 's/\r$//' > "$RUNTIME_DIR/adb_all.txt"
-    adb_run -s "$TARGET_ID" shell pm list packages -e 2>/dev/null | sed 's/\r$//' > "$RUNTIME_DIR/adb_active.txt"
-    adb_run -s "$TARGET_ID" shell pm list packages -d 2>/dev/null | sed 's/\r$//' > "$RUNTIME_DIR/adb_disabled.txt"
+    CACHE_READY=0
+    cache_adb_packages "-u" "$RUNTIME_DIR/adb_all.txt" "adb_all.txt" "0" || return 1
+    cache_adb_packages "-e" "$RUNTIME_DIR/adb_active.txt" "adb_active.txt" "0" || return 1
+    cache_adb_packages "-d" "$RUNTIME_DIR/adb_disabled.txt" "adb_disabled.txt" "1" || return 1
+    CACHE_READY=1
+}
+
+cache_adb_packages() {
+    cap_arg=$1
+    cap_output=$2
+    cap_name=$3
+    cap_allow_empty=$4
+    cap_tmp="$RUNTIME_DIR/$cap_name.tmp"
+
+    if ! adb_run -s "$TARGET_ID" shell pm list packages "$cap_arg" > "$cap_tmp" 2>/dev/null; then
+        report_error "ADB cache failed: adb_run pm list packages $cap_arg could not write $cap_output"
+        log_action "CACHE_ERROR" "$cap_name"
+        rm -f "$cap_tmp" "$cap_output"
+        return 1
+    fi
+    if ! sed 's/\r$//' "$cap_tmp" > "$cap_output"; then
+        report_error "ADB cache failed: could not normalize $cap_tmp into $cap_output"
+        log_action "CACHE_ERROR" "$cap_name"
+        rm -f "$cap_tmp" "$cap_output"
+        return 1
+    fi
+    rm -f "$cap_tmp"
+
+    if [ ! -s "$cap_output" ]; then
+        if [ "$cap_allow_empty" = "1" ]; then
+            printf '%s[!] ADB cache warning: %s is empty after adb_run.%s\n' "$TXT_YEL" "$cap_output" "$RESET" >&2
+            log_action "CACHE_WARN" "$cap_name empty"
+            return 0
+        fi
+        report_error "ADB cache failed: $cap_output is empty after adb_run"
+        log_action "CACHE_ERROR" "$cap_name empty"
+        rm -f "$cap_output"
+        return 1
+    fi
+}
+
+require_cache_ready() {
+    if [ "${CACHE_READY:-0}" != "1" ]; then
+        report_error "Device package cache is not ready; refresh the cache before continuing."
+        return 1
+    fi
 }
 
 wait_for_device() {
@@ -60,8 +104,10 @@ wait_for_device() {
             [ -n "$TARGET_MODEL" ] || TARGET_MODEL="Unknown Device"
             printf '%s  [v]%s Connected Model: %s%s%s\n' "$TXT_GRN" "$RESET" "$TXT_WHT" "$TARGET_MODEL" "$RESET"
             sleep 2
-            cache_device_state
-            return
+            if cache_device_state; then
+                return
+            fi
+            sleep 2
         fi
         sleep 2
     done
@@ -71,6 +117,7 @@ check_app_state() {
     chk_pkg=$1
     APP_STATE="Not Installed / Removed"
     APP_STATE_COLOR="$TXT_GRAY"
+    require_cache_ready || return 1
 
     if grep -Fqx "package:$chk_pkg" "$RUNTIME_DIR/adb_all.txt" 2>/dev/null; then
         APP_STATE="Uninstalled (User 0)"
@@ -139,7 +186,7 @@ remove_or_freeze_package() {
 execute_action() {
     ea_pkg=$1
     ea_label=$2
-    check_app_state "$ea_pkg"
+    check_app_state "$ea_pkg" || return 1
     should_skip_current_state && return 0
 
     printf '  Processing: %s%s%s (%s)\n' "$TXT_WHT" "$ea_label" "$RESET" "$ea_pkg"
@@ -154,7 +201,7 @@ execute_action() {
 ask_user() {
     au_pkg=$1
     au_label=$2
-    check_app_state "$au_pkg"
+    check_app_state "$au_pkg" || return 1
     should_skip_current_state && return 0
 
     while :; do
@@ -179,7 +226,7 @@ ask_user() {
                 ;;
             U)
                 restore_package "$au_pkg"
-                cache_device_state
+                cache_device_state || return 1
                 return 0
                 ;;
             E)
@@ -193,7 +240,6 @@ process_phase() {
     pp_title=$1
     pp_color=$2
     pp_file=$3
-    pp_risk=$4
 
     clear_screen
     printf '%s  %s%s\n' "$pp_color" "$pp_title" "$RESET"
@@ -206,11 +252,14 @@ process_phase() {
         [ -n "$pp_pkg" ] || continue
         pp_label=$(app_label "$pp_pkg")
         if [ "$pp_choice" = "A" ]; then
-            execute_action "$pp_pkg" "$pp_label" "$pp_risk"
+            execute_action "$pp_pkg" "$pp_label"
+            pp_result=$?
+            [ "$pp_result" -ne 0 ] && return 1
         else
-            ask_user "$pp_pkg" "$pp_label" "$pp_risk"
+            ask_user "$pp_pkg" "$pp_label"
             pp_result=$?
             [ "$pp_result" -eq 2 ] && return 2
+            [ "$pp_result" -ne 0 ] && return 1
         fi
     done < "$pp_file"
 
@@ -218,6 +267,7 @@ process_phase() {
 }
 
 build_explorer_list() {
+    require_cache_ready || return 1
     bel_source=$RUNTIME_DIR/adb_all.txt
     [ "$SHOW_ACTIVE_ONLY" = "1" ] && bel_source=$RUNTIME_DIR/adb_active.txt
 
@@ -267,7 +317,7 @@ explorer_action_loop() {
     eal_label=$(app_label "$eal_pkg")
 
     while :; do
-        check_app_state "$eal_pkg"
+        check_app_state "$eal_pkg" || return 1
         clear_screen
         printf '%sApp Name:%s    %s%s%s\n' "$BOLD" "$RESET" "$TXT_WHT" "$eal_label" "$RESET"
         printf '%sPackage ID:%s  %s%s%s\n' "$BOLD" "$RESET" "$TXT_WHT" "$eal_pkg" "$RESET"
@@ -278,12 +328,12 @@ explorer_action_loop() {
         case "$eal_choice" in
             F)
                 remove_or_freeze_package "$eal_pkg"
-                cache_device_state
+                cache_device_state || return 1
                 sleep 1
                 ;;
             R)
                 restore_package "$eal_pkg"
-                cache_device_state
+                cache_device_state || return 1
                 sleep 1
                 ;;
             B)
@@ -297,7 +347,10 @@ interactive_explorer() {
     SHOW_ACTIVE_ONLY=0
 
     while :; do
-        build_explorer_list
+        build_explorer_list || {
+            pause_screen
+            return
+        }
         if [ "$TOTAL_APPS" -eq 0 ]; then
             printf '%s[!] No apps found for the current filter.%s\n' "$TXT_RED" "$RESET"
             pause_screen
@@ -327,7 +380,10 @@ interactive_explorer() {
                 E)
                     ie_pkg=$(selected_explorer_package)
                     [ -n "$ie_pkg" ] && explorer_action_loop "$ie_pkg"
-                    build_explorer_list
+                    build_explorer_list || {
+                        pause_screen
+                        return
+                    }
                     [ "$TOTAL_APPS" -eq 0 ] && break
                     [ "$CURRENT_INDEX" -gt "$TOTAL_APPS" ] && CURRENT_INDEX=$TOTAL_APPS
                     ;;
@@ -348,6 +404,11 @@ interactive_explorer() {
 }
 
 mode_select() {
+    require_cache_ready || {
+        pause_screen
+        return
+    }
+
     clear_screen
     printf '\n%s====================================================================================================================%s\n' "$TXT_GRAY" "$RESET"
     printf '%s  STEP 2: SELECT OPERATION MODE%s\n' "$BOLD$TXT_WHT" "$RESET"
@@ -417,11 +478,15 @@ mode_select() {
         IFS= read -r _preview_answer
     fi
 
-    process_phase "PHASE 1/4 | Ads, Analytics & Junk Services" "$BG_GRN" "$RUNTIME_DIR/phase1_work" "SAFE"
-    [ "$?" -eq 2 ] && finish_task && return
+    process_phase "PHASE 1/4 | Ads, Analytics & Junk Services" "$BG_GRN" "$RUNTIME_DIR/phase1_work"
+    phase_result=$?
+    [ "$phase_result" -eq 2 ] && finish_task && return
+    [ "$phase_result" -ne 0 ] && pause_screen && return
 
-    process_phase "PHASE 2/4 | User Tools & Features" "$BG_YEL" "$RUNTIME_DIR/phase2_work" "CAUTION"
-    [ "$?" -eq 2 ] && finish_task && return
+    process_phase "PHASE 2/4 | User Tools & Features" "$BG_YEL" "$RUNTIME_DIR/phase2_work"
+    phase_result=$?
+    [ "$phase_result" -eq 2 ] && finish_task && return
+    [ "$phase_result" -ne 0 ] && pause_screen && return
 
     if [ "$PROTECT_CORE" = "1" ] && [ "$MODE_NAME" != "RESTORE" ]; then
         clear_screen
@@ -430,11 +495,15 @@ mode_select() {
         printf '%sSkipping Phase 3 to prevent potential bootloops.%s\n' "$TXT_GRAY" "$RESET"
         sleep 3
     else
-        process_phase "PHASE 3/4 | Risky System Apps" "$BG_RED" "$RUNTIME_DIR/phase3_work" "DANGER"
-        [ "$?" -eq 2 ] && finish_task && return
+        process_phase "PHASE 3/4 | Risky System Apps" "$BG_RED" "$RUNTIME_DIR/phase3_work"
+        phase_result=$?
+        [ "$phase_result" -eq 2 ] && finish_task && return
+        [ "$phase_result" -ne 0 ] && pause_screen && return
     fi
 
-    process_phase "PHASE 4/4 | Hidden System Apps" "$BG_MAG" "$RUNTIME_DIR/phase4_work" "HIDDEN"
+    process_phase "PHASE 4/4 | Hidden System Apps" "$BG_MAG" "$RUNTIME_DIR/phase4_work"
+    phase_result=$?
+    [ "$phase_result" -ne 0 ] && [ "$phase_result" -ne 2 ] && pause_screen && return
     finish_task
 }
 
@@ -460,7 +529,7 @@ main_menu() {
         case "$mm_choice" in
             1) mode_select ;;
             2) interactive_explorer ;;
-            3) cache_device_state ;;
+            3) cache_device_state || pause_screen ;;
             E) return ;;
         esac
     done

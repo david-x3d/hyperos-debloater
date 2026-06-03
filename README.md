@@ -2,9 +2,9 @@
 
 # 🚀 Xiaomi HyperOS Debloat Commander
 
-[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-0078D6?style=for-the-badge)](#)
-[![Target](https://img.shields.io/badge/Target-HyperOS%20%7C%20MIUI-FF6900?style=for-the-badge&logo=xiaomi&logoColor=white)](#)
-[![License](https://img.shields.io/badge/License-MIT-10B981?style=for-the-badge)](#)
+![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-0078D6?style=for-the-badge)
+![Target](https://img.shields.io/badge/Target-HyperOS%20%7C%20MIUI-FF6900?style=for-the-badge&logo=xiaomi&logoColor=white)
+![License](https://img.shields.io/badge/License-MIT-10B981?style=for-the-badge)
 
 *A powerful, interactive, and completely reversible utility for Windows, Linux, and macOS designed to safely eradicate telemetry, intrusive ads, and bloatware from Xiaomi, Redmi, and POCO devices, that supports Android 13+.*
 
@@ -105,7 +105,7 @@ Before running the Commander, ensure your environment is set up:
 
 ## 🚀 Quick Start Guide
 
-1. **Download** the latest release from the [Releases](#) tab.
+1. **Download** the latest release from the [Releases](https://github.com/ovsky/hyperos-debloater/releases) tab.
 2. **Connect** your device to your PC via USB. *(When prompted on your phone, accept the RSA fingerprint).*
 3. **Run the manager for your platform:**
    * Windows: execute `debloat_manager.cmd` as Administrator.

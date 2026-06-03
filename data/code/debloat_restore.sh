@@ -7,7 +7,7 @@ ROOT_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)
 
 ensure_config
 load_runtime_settings
-prepare_runtime
+prepare_runtime || exit 1
 require_adb
 
 create_restore_list() {
